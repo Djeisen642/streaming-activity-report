@@ -82,6 +82,42 @@ not expose dates depending on what's actually on their history pages;
 their `HISTORY_DATE_SELECTOR` placeholders will just fail to match (and
 fall back to `None`) if there's no date to find.
 
+## When a scraper breaks: automated fix attempts
+
+Sites change their DOM without notice, so a scraper that worked last month
+can silently start returning nothing. `health.py` tracks consecutive
+failures per scraped platform in `.scraper_health.json` (local-only,
+gitignored — never committed). A "failure" is either:
+
+- the fetch raised an error (timeout, selector never appeared, login never
+  detected), or
+- the fetch succeeded but found 0 events on a run where a previous run
+  found some.
+
+Deliberately **not** a failure signal: unchanged output across runs. This
+tool exists to find platforms you've stopped using, so an idle platform
+returning the same small/zero result every run is the tool working
+correctly, not a broken scraper — treating "no change" as breakage would
+make it fire constantly on exactly the accounts it's supposed to flag.
+
+Every scraper failure also gets an HTML snapshot + full-page screenshot
+saved to `debug_artifacts/<platform>/<timestamp>/` via
+`scrapers/base.run_scrape()` (also gitignored — it's your actual logged-in
+account UI). Once a platform crosses `FAILURE_THRESHOLD` (2, in
+`health.py`) consecutive failures, `main.py` shells out to the local
+Claude Code CLI (`claude -p ...`) telling it to load the `fix-scraper`
+skill and patch the broken selectors using those artifacts — no live
+browser session required for the fix itself. It opens a PR and never
+merges automatically; a selector change guessed from one static snapshot
+needs a real successful run before it's trusted. This requires the
+`claude` CLI on `PATH` wherever you run `main.py` (e.g. via cron); if it's
+missing, `main.py` logs that and moves on rather than failing the run.
+
+Adding a platform that needs scraping (no export tool)? Use the
+`new-scraper` skill (`.claude/skills/new-scraper/`) to scaffold it against
+the same `run_scrape()` pattern so it's health-tracked and fix-eligible
+from day one.
+
 ## Running
 
 ```bash

@@ -24,6 +24,16 @@ REPORT_OUTPUT_PATH = Path(
     os.environ.get("REPORT_OUTPUT_PATH", str(BASE_DIR / "report.html"))
 )
 
+# Where a scraper dumps HTML + screenshot on failure, and where
+# health.py persists per-platform consecutive-failure counts. Both contain
+# your actual viewing history/account UI — never commit these.
+DEBUG_ARTIFACTS_DIR = Path(
+    os.environ.get("DEBUG_ARTIFACTS_DIR", str(BASE_DIR / "debug_artifacts"))
+)
+SCRAPER_HEALTH_PATH = Path(
+    os.environ.get("SCRAPER_HEALTH_PATH", str(BASE_DIR / ".scraper_health.json"))
+)
+
 # A platform idle longer than this is visually flagged in the report.
 IDLE_THRESHOLD_DAYS = 30
 

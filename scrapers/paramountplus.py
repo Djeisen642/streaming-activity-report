@@ -13,7 +13,9 @@ just won't match and watched_date falls back to None for that item — that's
 expected and downstream reporting handles it.
 """
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional
+
+from playwright.sync_api import Page
 
 from models import PlatformResult, WatchEvent
 from scrapers import base
@@ -43,34 +45,24 @@ def _parse_date(raw: str) -> Optional[datetime]:
     return None
 
 
+def _scrape(page: Page) -> List[WatchEvent]:
+    events = []
+    for item in page.query_selector_all(HISTORY_ITEM_SELECTOR):
+        title_el = item.query_selector(HISTORY_TITLE_SELECTOR)
+        title = title_el.inner_text().strip() if title_el else ""
+        if not title:
+            continue
+        date_el = item.query_selector(HISTORY_DATE_SELECTOR)
+        raw_date = date_el.inner_text() if date_el else ""
+        events.append(
+            WatchEvent(
+                title=title,
+                watched_date=_parse_date(raw_date) if raw_date else None,
+                raw_source=item.inner_text(),
+            )
+        )
+    return events
+
+
 def fetch() -> PlatformResult:
-    try:
-        with base.persistent_browser() as context:
-            page = base.get_page(context)
-            page.goto(HISTORY_URL)
-            base.debug_pause(page, label="Paramount+ history page load")
-
-            if not base.is_logged_in(page, LOGGED_IN_SELECTOR):
-                base.wait_for_manual_login(page, LOGGED_IN_SELECTOR)
-                page.goto(HISTORY_URL)
-                base.debug_pause(page, label="Paramount+ history page load (post-login)")
-
-            events = []
-            for item in page.query_selector_all(HISTORY_ITEM_SELECTOR):
-                title_el = item.query_selector(HISTORY_TITLE_SELECTOR)
-                title = title_el.inner_text().strip() if title_el else ""
-                if not title:
-                    continue
-                date_el = item.query_selector(HISTORY_DATE_SELECTOR)
-                raw_date = date_el.inner_text() if date_el else ""
-                events.append(
-                    WatchEvent(
-                        title=title,
-                        watched_date=_parse_date(raw_date) if raw_date else None,
-                        raw_source=item.inner_text(),
-                    )
-                )
-
-            return PlatformResult(platform=PLATFORM_NAME, events=events)
-    except Exception as exc:
-        return PlatformResult(platform=PLATFORM_NAME, error=f"Paramount+ scrape failed: {exc}")
+    return base.run_scrape(PLATFORM_NAME, HISTORY_URL, LOGGED_IN_SELECTOR, _scrape)

@@ -7,6 +7,11 @@ report.html
 # Personal viewing-history exports.
 data/*.csv
 
+# Failure snapshots (HTML/screenshot of your actual logged-in account) and
+# scraper health state — local-only, never commit.
+debug_artifacts/
+.scraper_health.json
+
 # Python
 __pycache__/
 *.pyc
