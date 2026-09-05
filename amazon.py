@@ -14,7 +14,7 @@ defaults, not verified against a real export. Open your actual CSV's
 header row and update these constants to match before relying on this.
 """
 import csv
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
 
@@ -38,7 +38,7 @@ DATE_FORMATS = [
 ]
 
 
-def _parse_date(raw: str) -> Optional[datetime]:
+def _parse_date(raw: str) -> Optional[date]:
     raw = raw.strip()
     for fmt in DATE_FORMATS:
         try:

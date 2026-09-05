@@ -1,15 +1,20 @@
 """
-Tracks per-platform scrape health across runs and decides when a browser
-scraper (Hulu/Disney+/Paramount+) has failed enough consecutive times to
-be worth an automated fix attempt.
+Tracks per-platform scrape health across runs and decides when a scraper
+(Netflix, Prime Video, Hulu, Disney+) has failed enough consecutive times
+to be worth an automated fix attempt.
 
 Only two things count as a failure signal here — deliberately not "the
 scraper returned the same data as last run":
 
-  1. The fetch errored (timeout, missing selector, login never detected).
-  2. The fetch succeeded but found 0 events on a run where a previous run
-     found some — a strong sign the item selector broke, not that
-     history was cleared.
+  1. The fetch errored (timeout, missing selector, login never detected,
+     an endpoint whose shape changed — the scrapers raise for that rather
+     than return an empty list).
+  2. The fetch succeeded but found 0 items on a run where a previous run
+     found some — usually a broken selector/endpoint. (For Hulu/Disney+
+     this can also be a genuinely emptied "Continue Watching" rail; that's
+     the same rare false positive the tool already tolerates for idle
+     dated platforms, and a triggered fix run will just report nothing
+     wrong.)
 
 Unchanged output across runs is excluded on purpose: this tool's entire
 point is finding platforms you've stopped watching, so an idle platform
