@@ -1,0 +1,14 @@
+# Browser session profile — contains live login cookies, never commit.
+.browser_profile/
+
+# Generated output.
+report.html
+
+# Personal viewing-history exports.
+data/*.csv
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
