@@ -73,11 +73,15 @@ def main() -> int:
         else:
             print(f"[{result.platform}] {len(result.events)} titles found")
 
+    # Write the report before any fix-run trigger: all data needed for it
+    # is already computed, and a triggered `claude -p` call can take up to
+    # FIX_RUN_TIMEOUT_SECONDS — the report shouldn't wait behind that.
+    config.REPORT_OUTPUT_PATH.write_text(report.build_report(results), encoding="utf-8")
+    print(f"Report written to {config.REPORT_OUTPUT_PATH}")
+
     for platform in health.record_and_check(scraped_results):
         trigger_fix_run(platform)
 
-    config.REPORT_OUTPUT_PATH.write_text(report.build_report(results), encoding="utf-8")
-    print(f"Report written to {config.REPORT_OUTPUT_PATH}")
     return 0
 
 

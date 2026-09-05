@@ -9,8 +9,9 @@ Headless mode is intentionally not offered here — these sites actively
 fingerprint and block headless Chromium, so a headless run is likely to
 just get blocked rather than save time.
 """
+import sys
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple
 
@@ -55,10 +56,21 @@ class persistent_browser:
         return self._context
 
     def __exit__(self, exc_type, exc, tb) -> None:
+        # Best-effort cleanup: an exception raised here (e.g. the browser
+        # process already died) would otherwise propagate out of the
+        # `with` block and silently replace/discard whatever the caller
+        # was already returning from inside it — including a correctly
+        # captured scrape failure and its saved debug artifacts.
         if self._context is not None:
-            self._context.close()
+            try:
+                self._context.close()
+            except Exception as exc:
+                print(f"[persistent_browser] context.close() failed: {exc}", file=sys.stderr)
         if self._pw is not None:
-            self._pw.stop()
+            try:
+                self._pw.stop()
+            except Exception as exc:
+                print(f"[persistent_browser] playwright.stop() failed: {exc}", file=sys.stderr)
 
 
 def get_page(context: BrowserContext) -> Page:
@@ -109,22 +121,30 @@ def wait_for_manual_login(page: Page, logged_in_selector: str, poll_seconds: int
     print("Login detected, continuing.")
 
 
-def save_failure_artifacts(page: Optional[Page], platform: str, error: str) -> Path:
+def save_failure_artifacts(page: Optional[Page], platform: str, error: str) -> Optional[Path]:
     """
     On scrape failure, dumps the page's HTML and a full-page screenshot to
     debug_artifacts/<platform>/<timestamp>/, so a break can be diagnosed
     (by you, or by the fix-scraper skill) from that snapshot instead of
     requiring a live reproduction.
 
-    Best-effort: a page that never loaded won't have content to dump, and
-    that's fine — error.txt alone is still written.
+    Must be called with `page` still attached to an open context/browser —
+    callers close the context before this returns, so a Playwright call
+    made afterward would just fail. Best-effort beyond that: a page that
+    never loaded won't have content to dump, and a filesystem problem
+    writing the artifacts is logged rather than allowed to crash the run
+    that's already in an error path.
     """
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     slug = platform.lower().replace("+", "plus").replace(" ", "_")
     out_dir = config.DEBUG_ARTIFACTS_DIR / slug / timestamp
-    out_dir.mkdir(parents=True, exist_ok=True)
 
-    (out_dir / "error.txt").write_text(error, encoding="utf-8")
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "error.txt").write_text(error, encoding="utf-8")
+    except OSError as exc:
+        print(f"[{platform}] could not write failure artifacts to {out_dir}: {exc}", file=sys.stderr)
+        return None
 
     if page is not None:
         try:
@@ -139,6 +159,48 @@ def save_failure_artifacts(page: Optional[Page], platform: str, error: str) -> P
     return out_dir
 
 
+def parse_date_with_formats(raw: str, formats: List[str]) -> Optional[date]:
+    """Tries each strptime format in order, returning the first that parses."""
+    raw = (raw or "").strip()
+    for fmt in formats:
+        try:
+            return datetime.strptime(raw, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def scrape_dated_items(
+    page: Page,
+    item_selector: str,
+    title_selector: str,
+    date_selector: str,
+    parse_date: Callable[[str], Optional[date]],
+) -> List[WatchEvent]:
+    """
+    Shared item/title/date extraction for scrapers whose history items may
+    carry a per-item date (Disney+, Paramount+). Hulu's history has no
+    per-item date at all, so it builds its WatchEvents directly instead of
+    using this helper.
+    """
+    events = []
+    for item in page.query_selector_all(item_selector):
+        title_el = item.query_selector(title_selector)
+        title = title_el.inner_text().strip() if title_el else ""
+        if not title:
+            continue
+        date_el = item.query_selector(date_selector)
+        raw_date = date_el.inner_text() if date_el else ""
+        events.append(
+            WatchEvent(
+                title=title,
+                watched_date=parse_date(raw_date) if raw_date else None,
+                raw_source=item.inner_text(),
+            )
+        )
+    return events
+
+
 def run_scrape(
     platform: str,
     history_url: str,
@@ -149,24 +211,29 @@ def run_scrape(
     Shared lifecycle for the browser-scraped platforms: launch the
     persistent context, navigate to `history_url`, handle first-run manual
     login, then hand the page to `scrape_fn` to pull events. Any failure
-    (navigation, login, or inside scrape_fn) is caught here and saved via
-    save_failure_artifacts before returning an error PlatformResult, so
-    every scraper gets the same failure-capture behavior for free.
+    (navigation, login, or inside scrape_fn) is caught and saved via
+    save_failure_artifacts *before* the context closes — artifacts need a
+    still-open page to capture anything — so every scraper gets the same
+    failure-capture behavior for free.
     """
-    page: Optional[Page] = None
     try:
         with persistent_browser() as context:
             page = get_page(context)
-            page.goto(history_url)
-            debug_pause(page, label=f"{platform} history page load")
-
-            if not is_logged_in(page, logged_in_selector):
-                wait_for_manual_login(page, logged_in_selector)
+            try:
                 page.goto(history_url)
-                debug_pause(page, label=f"{platform} history page load (post-login)")
+                debug_pause(page, label=f"{platform} history page load")
 
-            events = scrape_fn(page)
-            return PlatformResult(platform=platform, events=events)
+                if not is_logged_in(page, logged_in_selector):
+                    wait_for_manual_login(page, logged_in_selector)
+                    page.goto(history_url)
+                    debug_pause(page, label=f"{platform} history page load (post-login)")
+
+                events = scrape_fn(page)
+                return PlatformResult(platform=platform, events=events)
+            except Exception as exc:
+                save_failure_artifacts(page, platform, str(exc))
+                return PlatformResult(platform=platform, error=f"{platform} scrape failed: {exc}")
     except Exception as exc:
-        save_failure_artifacts(page, platform, str(exc))
+        # Context/browser launch itself failed — no page was ever opened.
+        save_failure_artifacts(None, platform, str(exc))
         return PlatformResult(platform=platform, error=f"{platform} scrape failed: {exc}")

@@ -15,7 +15,7 @@ just won't match and watched_date falls back to None for that item — that's
 expected and downstream reporting handles it, no need to make this scraper
 error out over it.
 """
-from datetime import datetime
+from datetime import date
 from typing import List, Optional
 
 from playwright.sync_api import Page
@@ -38,33 +38,14 @@ HISTORY_DATE_SELECTOR = "[data-testid='item-date']"  # may not exist on the real
 DATE_FORMATS = ["%Y-%m-%d", "%m/%d/%Y", "%B %d, %Y"]
 
 
-def _parse_date(raw: str) -> Optional[datetime]:
-    raw = (raw or "").strip()
-    for fmt in DATE_FORMATS:
-        try:
-            return datetime.strptime(raw, fmt).date()
-        except ValueError:
-            continue
-    return None
+def _parse_date(raw: str) -> Optional[date]:
+    return base.parse_date_with_formats(raw, DATE_FORMATS)
 
 
 def _scrape(page: Page) -> List[WatchEvent]:
-    events = []
-    for item in page.query_selector_all(HISTORY_ITEM_SELECTOR):
-        title_el = item.query_selector(HISTORY_TITLE_SELECTOR)
-        title = title_el.inner_text().strip() if title_el else ""
-        if not title:
-            continue
-        date_el = item.query_selector(HISTORY_DATE_SELECTOR)
-        raw_date = date_el.inner_text() if date_el else ""
-        events.append(
-            WatchEvent(
-                title=title,
-                watched_date=_parse_date(raw_date) if raw_date else None,
-                raw_source=item.inner_text(),
-            )
-        )
-    return events
+    return base.scrape_dated_items(
+        page, HISTORY_ITEM_SELECTOR, HISTORY_TITLE_SELECTOR, HISTORY_DATE_SELECTOR, _parse_date
+    )
 
 
 def fetch() -> PlatformResult:
