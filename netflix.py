@@ -10,7 +10,7 @@ Netflix's export has stable Title/Date columns, so unlike amazon.py this
 one doesn't need per-user column-name configuration.
 """
 import csv
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
 
@@ -26,7 +26,7 @@ DATE_COLUMN = "Date"
 DATE_FORMATS = ["%m/%d/%y", "%d/%m/%y", "%m/%d/%Y", "%d/%m/%Y"]
 
 
-def _parse_date(raw: str) -> Optional[datetime]:
+def _parse_date(raw: str) -> Optional[date]:
     raw = raw.strip()
     for fmt in DATE_FORMATS:
         try:

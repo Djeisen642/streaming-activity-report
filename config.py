@@ -34,6 +34,13 @@ SCRAPER_HEALTH_PATH = Path(
     os.environ.get("SCRAPER_HEALTH_PATH", str(BASE_DIR / ".scraper_health.json"))
 )
 
+# Per-platform "Continue Watching" title snapshots, used to derive an
+# activity date for platforms (Hulu, Disney+) that expose no per-item
+# watch date. Contains titles from your account — local-only, gitignored.
+ACTIVITY_SNAPSHOT_PATH = Path(
+    os.environ.get("ACTIVITY_SNAPSHOT_PATH", str(BASE_DIR / ".activity_snapshots.json"))
+)
+
 # A platform idle longer than this is visually flagged in the report.
 IDLE_THRESHOLD_DAYS = 30
 

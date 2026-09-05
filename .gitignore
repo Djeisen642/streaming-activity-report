@@ -7,13 +7,18 @@ report.html
 # Personal viewing-history exports.
 data/*.csv
 
-# Failure snapshots (HTML/screenshot of your actual logged-in account) and
-# scraper health state — local-only, never commit.
+# Failure snapshots (HTML/screenshot of your actual logged-in account),
+# scraper health state, and the Continue Watching title snapshots used to
+# derive activity dates — all hold account data; local-only, never commit.
 debug_artifacts/
 .scraper_health.json
+.activity_snapshots.json
 
 # Python
 __pycache__/
 *.pyc
 .venv/
 venv/
+
+# Playwright MCP scratch (screenshots, snapshots, console logs from browser sessions)
+.playwright-mcp/

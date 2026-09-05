@@ -1,26 +1,38 @@
 """
-Entry point: runs all five platform fetchers and writes report.html.
+Entry point: runs every platform fetcher and writes report.html.
 
-Netflix and Prime Video read from local CSV exports (see README for how to
-get them). Hulu, Disney+, and Paramount+ are scraped via a persistent local
-browser session — first run opens a visible browser for manual login;
-later runs reuse that session from the profile directory.
+All four platforms are read live from a persistent, logged-in browser
+session (first run opens a visible browser for manual login; later runs
+reuse that session):
 
-Only the three scraped platforms feed health.py's failure tracking: a
-broken CSV import needs a fresh export from the user, not a code fix, so
-it's not a candidate for the automated fix-scraper trigger below.
+  - Netflix, Prime Video  — real dated history pages, scraped for the
+    active profile. (netflix.py / amazon.py at the repo root are the
+    CSV-import alternative — swap them in here if you'd rather feed an
+    official export than run a browser.)
+  - Hulu, Disney+         — publish no watch dates anywhere, so these read
+    the "Continue Watching" rail instead; snapshots.py turns run-to-run
+    changes in that list into an activity date.
+
+All four feed health.py's failure tracking and are eligible for the
+automated fix-scraper trigger below.
 """
 import subprocess
 import sys
 
-import amazon
 import config
 import health
-import netflix
 import report
-from scrapers import disneyplus, hulu, paramountplus
+import snapshots
+from scrapers import disneyplus, hulu, netflix, primevideo
 
-SCRAPED_FETCHERS = [hulu.fetch, disneyplus.fetch, paramountplus.fetch]
+SCRAPED_FETCHERS = [netflix.fetch, primevideo.fetch, hulu.fetch, disneyplus.fetch]
+
+# Platforms with no per-item watch date: their PlatformResult carries
+# "Continue Watching" titles, and snapshots.py derives an activity date
+# from how that set changes between runs. Derived from the modules so a
+# PLATFORM_NAME rename can't half-apply (the name is also the health.py
+# and snapshots.py state-file key).
+NO_DATE_PLATFORMS = {hulu.PLATFORM_NAME, disneyplus.PLATFORM_NAME}
 
 # How long to let a triggered fix run go before giving up on it. This runs
 # from cron with nobody watching, so it must not hang indefinitely.
@@ -63,9 +75,17 @@ def trigger_fix_run(platform: str) -> None:
 
 
 def main() -> int:
-    csv_results = [netflix.fetch(), amazon.fetch()]
-    scraped_results = [fetch() for fetch in SCRAPED_FETCHERS]
-    results = csv_results + scraped_results
+    results = [fetch() for fetch in SCRAPED_FETCHERS]
+
+    # For the no-date platforms, fold in the activity date derived from
+    # the Continue Watching snapshot. Skip a result that errored — a
+    # broken scrape returning nothing must not be snapshotted as "the
+    # list changed".
+    for result in results:
+        if result.platform in NO_DATE_PLATFORMS and not result.error:
+            result.last_activity_date = snapshots.record_activity(
+                result.platform, [e.title for e in result.events]
+            )
 
     for result in results:
         if result.error:
@@ -79,7 +99,7 @@ def main() -> int:
     config.REPORT_OUTPUT_PATH.write_text(report.build_report(results), encoding="utf-8")
     print(f"Report written to {config.REPORT_OUTPUT_PATH}")
 
-    for platform in health.record_and_check(scraped_results):
+    for platform in health.record_and_check(results):
         trigger_fix_run(platform)
 
     return 0

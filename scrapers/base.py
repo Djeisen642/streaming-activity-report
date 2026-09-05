@@ -1,14 +1,23 @@
 """
 Shared Playwright plumbing for the browser-scraped platforms (Hulu,
-Disney+, Paramount+). None of these expose an export tool, so we drive a
-real, persistent, non-headless Chromium profile that the user logs into
-manually once; Playwright reuses that profile's cookies/session on later
-runs, so no credentials are ever stored by this tool.
+Disney+, Netflix, Prime Video). None of these are read here via an official
+export; we drive a real, persistent, non-headless Chromium profile that the
+user logs into manually once, and Playwright reuses that profile's
+cookies/session on later runs, so no credentials are ever stored by this
+tool. (netflix.py / amazon.py at the repo root remain as a CSV-import
+alternative for Netflix and Prime Video; main.py chooses which path runs.)
+
+Each scraper's `_scrape(page)` does its own extraction — some hit the JSON
+endpoint the site's own web app calls (`page_fetch_json`), some read the
+rendered DOM — and returns a PlatformResult. `run_scrape` owns the shared
+lifecycle around that: launch, navigate, first-run manual login, and
+failure-artifact capture.
 
 Headless mode is intentionally not offered here — these sites actively
 fingerprint and block headless Chromium, so a headless run is likely to
 just get blocked rather than save time.
 """
+import json
 import sys
 import time
 from datetime import date, datetime, timezone
@@ -18,7 +27,7 @@ from typing import Callable, List, Optional, Tuple
 from playwright.sync_api import BrowserContext, Page, Playwright, sync_playwright
 
 import config
-from models import PlatformResult, WatchEvent
+from models import PlatformResult
 
 
 def launch_persistent_context(
@@ -88,18 +97,27 @@ def debug_pause(page: Page, label: str = "") -> None:
     """
     if not config.SCRAPERS_DEBUG:
         return
+    if not sys.stdin.isatty():
+        print(
+            "[SCRAPERS_DEBUG] set but stdin is not a TTY (nothing to read an Enter "
+            "from) — not pausing.",
+            file=sys.stderr,
+        )
+        return
     print(f"[SCRAPERS_DEBUG] Paused on: {label or page.url}")
     print("Inspect the page/devtools in the opened browser window.")
     input("Press Enter here to continue...")
 
 
-def is_logged_in(page: Page, logged_in_selector: str, timeout_ms: int = 5000) -> bool:
+def is_logged_in(page: Page, logged_in_selector: str, timeout_ms: int = 15000) -> bool:
     """
-    Best-effort login check: waits briefly for a selector that should only
-    render when authenticated (e.g. an account/profile menu element).
-
-    PLACEHOLDER CAVEAT: `logged_in_selector` is supplied by each scraper
-    module and has NOT been verified against a live, authenticated page.
+    Login check: waits for a selector that should only render when
+    authenticated. Each scraper points this at something that appears once
+    its *content* is on screen (the activity table, a content rail), not
+    just the nav — so a scrape that runs right after this passes can
+    assume the data it wants has rendered. The timeout is generous because
+    these are heavy SPAs on a cold profile; a logged-out page redirects to
+    a login screen fast, so waiting doesn't slow that case much.
     """
     try:
         page.wait_for_selector(logged_in_selector, timeout=timeout_ms)
@@ -108,14 +126,47 @@ def is_logged_in(page: Page, logged_in_selector: str, timeout_ms: int = 5000) ->
         return False
 
 
-def wait_for_manual_login(page: Page, logged_in_selector: str, poll_seconds: int = 5) -> None:
+# How long to wait for a human to complete the first-run manual login
+# before giving up. Long enough for a real login (including 2FA), short
+# enough that a stale-session run doesn't sit open for hours.
+MANUAL_LOGIN_TIMEOUT_SECONDS = 300
+
+
+def wait_for_manual_login(
+    page: Page,
+    logged_in_selector: str,
+    poll_seconds: int = 5,
+    timeout_seconds: int = MANUAL_LOGIN_TIMEOUT_SECONDS,
+) -> None:
     """
     Blocks until `logged_in_selector` appears, for first-run manual login
     in the visible browser window. The persistent profile directory
     remembers the resulting session for subsequent runs.
+
+    Raises rather than blocking forever in the two cases where no one can
+    ever complete the login:
+
+      - stdin isn't a TTY (e.g. the cron run the README describes): there's
+        no interactive session to log in from, so fail fast.
+      - the human didn't finish within `timeout_seconds`.
+
+    Either way `run_scrape`'s handler catches it, saves failure artifacts,
+    and returns an error PlatformResult like any other scrape failure.
     """
+    if not sys.stdin.isatty():
+        raise RuntimeError(
+            "not logged in and no interactive terminal to log in from — the saved "
+            "browser session is missing or expired; run once interactively to "
+            "refresh it"
+        )
+
     print("Log in manually in the opened browser window.")
+    deadline = time.monotonic() + timeout_seconds
     while not is_logged_in(page, logged_in_selector, timeout_ms=poll_seconds * 1000):
+        if time.monotonic() >= deadline:
+            raise TimeoutError(
+                f"manual login not completed within {timeout_seconds}s"
+            )
         print("Still waiting for login...")
         time.sleep(1)
     print("Login detected, continuing.")
@@ -170,47 +221,52 @@ def parse_date_with_formats(raw: str, formats: List[str]) -> Optional[date]:
     return None
 
 
-def scrape_dated_items(
-    page: Page,
-    item_selector: str,
-    title_selector: str,
-    date_selector: str,
-    parse_date: Callable[[str], Optional[date]],
-) -> List[WatchEvent]:
+def page_fetch_json(page: Page, url: str, timeout_ms: int = 20000) -> dict:
     """
-    Shared item/title/date extraction for scrapers whose history items may
-    carry a per-item date (Disney+, Paramount+). Hulu's history has no
-    per-item date at all, so it builds its WatchEvents directly instead of
-    using this helper.
+    Run `fetch(url)` from inside the logged-in page and return the parsed
+    JSON. Used by scrapers that read the same private endpoint the site's
+    own web app calls (cookie-authenticated — the request inherits the
+    page's session). Raises on a non-2xx status or a non-JSON body so
+    run_scrape turns it into a normal scrape failure with artifacts.
     """
-    events = []
-    for item in page.query_selector_all(item_selector):
-        title_el = item.query_selector(title_selector)
-        title = title_el.inner_text().strip() if title_el else ""
-        if not title:
-            continue
-        date_el = item.query_selector(date_selector)
-        raw_date = date_el.inner_text() if date_el else ""
-        events.append(
-            WatchEvent(
-                title=title,
-                watched_date=parse_date(raw_date) if raw_date else None,
-                raw_source=item.inner_text(),
-            )
-        )
-    return events
+    result = page.evaluate(
+        """async ({ url, timeoutMs }) => {
+            const ctl = new AbortController();
+            const t = setTimeout(() => ctl.abort(), timeoutMs);
+            try {
+                const r = await fetch(url, {
+                    credentials: 'include',
+                    headers: { 'Accept': 'application/json' },
+                    signal: ctl.signal,
+                });
+                return { status: r.status, body: await r.text() };
+            } finally {
+                clearTimeout(t);
+            }
+        }""",
+        {"url": url, "timeoutMs": timeout_ms},
+    )
+    if not (200 <= result["status"] < 300):
+        raise RuntimeError(f"GET {url} -> HTTP {result['status']}")
+    try:
+        return json.loads(result["body"])
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"GET {url} -> non-JSON response ({exc})")
 
 
 def run_scrape(
     platform: str,
     history_url: str,
     logged_in_selector: str,
-    scrape_fn: Callable[[Page], List[WatchEvent]],
+    scrape_fn: Callable[[Page], PlatformResult],
 ) -> PlatformResult:
     """
     Shared lifecycle for the browser-scraped platforms: launch the
     persistent context, navigate to `history_url`, handle first-run manual
-    login, then hand the page to `scrape_fn` to pull events. Any failure
+    login, then hand the page to `scrape_fn`, which pulls the data and
+    returns its own PlatformResult (so a scraper can set `profile` or
+    other fields, not just events) — including its own `platform` name;
+    the `platform` arg here is only for the failure paths. Any failure
     (navigation, login, or inside scrape_fn) is caught and saved via
     save_failure_artifacts *before* the context closes — artifacts need a
     still-open page to capture anything — so every scraper gets the same
@@ -228,8 +284,7 @@ def run_scrape(
                     page.goto(history_url)
                     debug_pause(page, label=f"{platform} history page load (post-login)")
 
-                events = scrape_fn(page)
-                return PlatformResult(platform=platform, events=events)
+                return scrape_fn(page)
             except Exception as exc:
                 save_failure_artifacts(page, platform, str(exc))
                 return PlatformResult(platform=platform, error=f"{platform} scrape failed: {exc}")

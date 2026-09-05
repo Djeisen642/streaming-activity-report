@@ -18,3 +18,12 @@ class PlatformResult:
     platform: str
     events: List[WatchEvent] = field(default_factory=list)
     error: Optional[str] = None
+    # Set only for platforms that expose no per-item watch date (Hulu,
+    # Disney+): the date their "Continue Watching" rail was last seen to
+    # change, derived by snapshots.py across runs. When this is set, the
+    # events carry titles but no usable watched_date, and the report
+    # labels the figure as list-change activity, not a watch date.
+    last_activity_date: Optional[date] = None
+    # Which account profile the figures reflect, when the scraper only
+    # looked at one (the active profile) rather than the whole account.
+    profile: Optional[str] = None
